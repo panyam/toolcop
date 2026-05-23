@@ -19,25 +19,26 @@ A context-aware, programmable permission gate for Claude Code tool calls. Replac
 # 1. Build and install (to ~/.local/bin by default; PREFIX= to override)
 make install
 
-# 2. Drop a starter rules file
-mkdir -p ~/.config/toolcop
-cp examples/rules.yaml ~/.config/toolcop/rules.yaml
+# 2. Wire toolcop into Claude Code: adds the PreToolUse hook to
+#    ~/.claude/settings.json (backed up first), and seeds a starter
+#    ~/.config/toolcop/rules.yaml if you don't already have one.
+toolcop onboard --dry-run    # preview the change first
+toolcop onboard              # do it
 
-# 3. Verify a few commands without wiring up Claude yet
-toolcop test "gh api repos/foo/bar"        # → allow
-toolcop test "GH_TOKEN=x gh api foo"        # → allow (env-stripped)
-toolcop test "timeout 30 npm test"          # → ask (no matching rule yet)
-toolcop test "rm -rf ~/foo"                 # → deny
+# 3. Verify a few commands offline
+toolcop test "gh api repos/foo/bar"   # → allow
+toolcop test "GH_TOKEN=x gh api foo"  # → allow (env-stripped)
+toolcop test "timeout 30 npm test"    # → ask (no matching rule yet)
+toolcop test "rm -rf ~/foo"           # → deny
 
-# 4. Wire as a PreToolUse hook — merge examples/settings.json into
-#    ~/.claude/settings.json (replace the path with your installed binary).
-#    The daemon auto-starts the first time a hook fires.
+# 4. Start a fresh Claude session — the daemon auto-starts on the
+#    first tool call. Logs land in ~/.local/state/toolcop/daemon.log.
 
-# 5. Watch what's happening (Phase 4 feature; not yet implemented)
-# toolcop tail
+# 5. To remove the hook later:
+toolcop offboard
 ```
 
-Run `toolcop --help` for the full subcommand list.
+For richer rules than the starter set, see [`examples/rules.yaml`](./examples/rules.yaml). Run `toolcop --help` for the full subcommand list.
 
 ## How it works
 

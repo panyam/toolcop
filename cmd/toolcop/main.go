@@ -67,7 +67,7 @@ to the daemon, rules, or modules.`,
 			runClient()
 		},
 	}
-	cmd.AddCommand(newDaemonCmd(), newTestCmd(), newStatusCmd())
+	cmd.AddCommand(newDaemonCmd(), newTestCmd(), newStatusCmd(), newOnboardCmd(), newOffboardCmd())
 	return cmd
 }
 
