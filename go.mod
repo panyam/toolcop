@@ -3,3 +3,5 @@ module github.com/panyam/toolcop
 go 1.25.0
 
 require mvdan.cc/sh/v3 v3.13.1
+
+require gopkg.in/yaml.v3 v3.0.1

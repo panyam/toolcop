@@ -205,15 +205,18 @@ rules:
 ```
 
 **Match fields** (all optional, AND-combined):
-- `tool` — string or `{ in: [...] }`
-- `program` — Bash only; the executable name after env-prefix strip
+- `tool` / `tool_in` — string or list
+- `program` / `program_in` — Bash only; the executable name after env-prefix
+  strip and wrapper strip (`timeout`, `nice`, `env`, ...)
 - `subcommand` / `subcommand_in` — the first positional arg
-- `args_starts_with` / `args_starts_with_any` — list-prefix match on args
-- `command_regex` — escape hatch
-- `cwd_under` — restrict by working dir
-- `env_has` — match env-prefixed key (e.g., `GH_TOKEN`)
-- `file_path` — Read/Edit/Write only (gitignore-style globs)
-- `url_domain` — WebFetch only
+- `args_starts_with` — list-prefix match on args after the program
+- `command_regex` — escape hatch, matched against raw command text
+- `env_has` — scalar key name or list; ALL listed keys must be set in the
+  command's env prefix (e.g., `env_has: GH_TOKEN`)
+- `env_equals` — map of key → exact-value pairs; ALL must match
+- `cwd_under` — restrict by working dir (Phase 3)
+- `file_path` — Read/Edit/Write only, gitignore-style globs (Phase 3)
+- `url_domain` — WebFetch only (Phase 3)
 
 **Decide fields:**
 - `decide` — `allow` | `deny` | `ask`
