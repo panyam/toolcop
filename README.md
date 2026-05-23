@@ -16,3 +16,8 @@ A context-aware, programmable permission gate for Claude Code tool calls. Replac
 ## Quickstart
 
 Coming with Phase 1.
+
+## License
+
+GPL-3.0. See [LICENSE](./LICENSE).
+
