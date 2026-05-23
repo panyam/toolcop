@@ -9,6 +9,22 @@ that runs real logic: YAML matchers for declarative cases, compiled Go modules
 for stateful ones (state machines, rate limits, sequence-aware decisions). All
 decisions go through one `PreToolUse` hook.
 
+## Agent compatibility
+
+V1 ships with Claude Code support — the client is a pass-through (its
+stdin/stdout JSON matches Claude's PreToolUse hook shape, which the daemon
+also speaks on the wire). The architecture is **agent-agnostic in
+ambition**: any agent that supports a PreToolUse-style hook (or equivalent)
+should be addable by:
+
+1. A new adapter at the client boundary that translates that agent's hook
+   JSON to/from toolcop's internal `Request`/`Response`.
+2. A new option (e.g., `toolcop --agent cursor`) to select the adapter.
+
+Daemon, rules, modules, and stores never need to change. The Decision
+verdicts (`allow` / `deny` / `ask`) map cleanly to most agent permission
+models. Defer the actual split until a second agent is on the table.
+
 ## Non-goals (V1)
 
 - **Not a command transformer.** Use `direnv` for env vars, PATH shims for
