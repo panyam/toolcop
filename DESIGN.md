@@ -273,7 +273,9 @@ provided stores.
 
 ## Stores
 
-Three KV stores, sqlite-backed at `~/.local/state/toolcop/state.db`:
+Three KV stores, **SQLite-backed** via `modernc.org/sqlite` (pure-Go, no CGO)
+with `github.com/jmoiron/sqlx` as the SQL layer. Single file at
+`~/.local/state/toolcop/state.db`, WAL mode. Decision tracked in issue 2.
 
 | Store | Key scope | Lifetime | Use |
 |---|---|---|---|
@@ -293,6 +295,10 @@ type KV interface {
 ```
 
 Typed helpers: `GetBool/SetBool`, `GetString/SetString`, `GetJSON/SetJSON`.
+
+Module-facing API is plain KV — modules never see SQL. The daemon's
+admin/observability surface (`toolcop session inspect/list`, `toolcop
+suggest`, TTL eviction) uses sqlx struct scanning against the same table.
 
 `/clear` in Claude Code yields a new `session_id`; the old `ClaudeSession`
 state stays in sqlite (for forensics via `toolcop session inspect <sid>`) but
