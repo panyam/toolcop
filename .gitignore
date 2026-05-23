@@ -1,0 +1,14 @@
+/bin/
+/toolcop
+/toolcopd
+
+*.test
+*.out
+coverage.txt
+
+.idea/
+.vscode/
+*.swp
+*.swo
+
+.toolcop/
