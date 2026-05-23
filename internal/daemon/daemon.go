@@ -176,9 +176,18 @@ func isAliveAt(socketPath string) bool {
 	return false
 }
 
-// DefaultSocketPath picks a per-user socket location, preferring
-// XDG_RUNTIME_DIR, then TMPDIR (macOS standard), then ~/.toolcop.
+// DefaultSocketPath picks a per-user socket location.
+//
+// Resolution order:
+//  1. $TOOLCOP_SOCKET — explicit override (used for tests, parallel runs,
+//     and per-shell isolation)
+//  2. $XDG_RUNTIME_DIR/toolcop.sock — Linux systemd-user default
+//  3. $TMPDIR/toolcop.sock — macOS standard
+//  4. ~/.toolcop/toolcop.sock — fallback
 func DefaultSocketPath() string {
+	if p := os.Getenv("TOOLCOP_SOCKET"); p != "" {
+		return p
+	}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		return filepath.Join(dir, "toolcop.sock")
 	}

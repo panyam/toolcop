@@ -1,0 +1,16 @@
+{
+  "_comment": "Snippet to merge into ~/.claude/settings.json. Replace the command path with the absolute path to your installed toolcop binary (e.g., /Users/YOU/.local/bin/toolcop after `make install`).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOU/.local/bin/toolcop"
+          }
+        ]
+      }
+    ]
+  }
+}

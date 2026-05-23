@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet install clean
+.PHONY: build test smoke fmt vet install clean
 
 BINARY := toolcop
 PREFIX ?= $(HOME)/.local
@@ -8,6 +8,9 @@ build:
 
 test:
 	go test ./...
+
+smoke: build
+	./tests/smoke.sh
 
 fmt:
 	go fmt ./...

@@ -1,0 +1,131 @@
+# toolcop example rules — copy to ~/.config/toolcop/rules.yaml and edit.
+#
+# Semantics:
+#   - Inside a rule's `match`, all fields are AND-combined.
+#   - The `_in` suffix on a field is OR within that dimension.
+#   - For OR across dimensions, write multiple rules with the same `decide`.
+#   - Verdict precedence: deny > ask > allow > pass (no opinion).
+#   - A rule with no `decide` is a no-op; useful as a template.
+#
+# Phase-1 match fields:
+#   tool, tool_in
+#   program, program_in           (Bash, after env-prefix and wrapper strip)
+#   subcommand, subcommand_in     (first positional after program)
+#   args_starts_with              (list-prefix match on args)
+#   command_regex                 (escape hatch — matches the raw command)
+#   env_has                       (scalar or list; all listed keys must be set)
+#   env_equals                    (map; all key=value pairs must match exactly)
+
+rules:
+  # gh read-only operations — investigate without prompting.
+  - name: gh-readonly
+    match:
+      tool: Bash
+      program: gh
+      subcommand_in: [api, pr, issue, run, workflow, repo]
+      args_starts_with: [api]
+    decide: allow
+    reason: gh read-only API call
+
+  - name: gh-pr-readonly
+    match:
+      tool: Bash
+      program: gh
+      subcommand: pr
+      args_starts_with: [pr, view]
+    decide: allow
+    reason: gh pr view
+
+  - name: gh-pr-list
+    match:
+      tool: Bash
+      program: gh
+      args_starts_with: [pr, list]
+    decide: allow
+    reason: gh pr list
+
+  - name: gh-pr-checks
+    match:
+      tool: Bash
+      program: gh
+      args_starts_with: [pr, checks]
+    decide: allow
+    reason: gh pr checks
+
+  - name: gh-issue-readonly
+    match:
+      tool: Bash
+      program: gh
+      args_starts_with: [issue, view]
+    decide: allow
+    reason: gh issue view
+
+  # git read-only — status / log / diff / show / branch listing.
+  - name: git-readonly
+    match:
+      tool: Bash
+      program: git
+      subcommand_in: [status, log, diff, show, blame, describe, rev-parse, ls-files, ls-tree]
+    decide: allow
+    reason: git read-only
+
+  # Common build/test commands.
+  - name: make-test-build
+    match:
+      tool: Bash
+      program: make
+      subcommand_in: [test, build, vet, fmt, lint, check]
+    decide: allow
+    reason: make test/build
+
+  - name: go-test-build-vet
+    match:
+      tool: Bash
+      program: go
+      subcommand_in: [test, build, vet, fmt, mod, list]
+    decide: allow
+    reason: go test/build/vet
+
+  - name: npm-readonly-scripts
+    match:
+      tool: Bash
+      program: npm
+      subcommand_in: [test, run, ls, view, list, outdated]
+    decide: allow
+    reason: npm safe scripts
+
+  # Hard safety nets — deny outright. `final: true` would block project-
+  # level overrides once Phase 3 lands.
+  - name: never-rm-rf-home
+    final: true
+    match:
+      tool: Bash
+      command_regex: 'rm\s+-rf?\s+(~|\$HOME|/Users/[^/]+|/home/[^/]+)(/|\s|$)'
+    decide: deny
+    reason: refused — rm -rf of home directory
+
+  - name: never-rm-rf-root
+    final: true
+    match:
+      tool: Bash
+      command_regex: 'rm\s+-rf?\s+/(\s|$)'
+    decide: deny
+    reason: refused — rm -rf /
+
+  # Example of env-aware matching: only allow gh when an explicit token is
+  # set in the env prefix (user is opting in to the call).
+  # - name: gh-with-explicit-token
+  #   match:
+  #     program: gh
+  #     env_has: GH_TOKEN
+  #   decide: allow
+  #   reason: explicit token provided
+
+  # Example of value matching: only allow npm test in test mode.
+  # - name: npm-test-only-when-NODE_ENV-test
+  #   match:
+  #     program: npm
+  #     subcommand: test
+  #     env_equals:
+  #       NODE_ENV: test
+  #   decide: allow
