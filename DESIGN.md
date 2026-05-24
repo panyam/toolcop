@@ -149,6 +149,34 @@ All matching rules + all modules vote. Fold by:
 
 Mirrors settings.json semantics so muscle memory carries over.
 
+### Compound-command safety
+
+For Bash, the parser walks the entire AST and surfaces every reachable
+command — chains (`&&` / `||` / `;`), loops (`for` / `while` / `until`),
+conditionals (`if` / `elif` / `else`), subshells, brace groups, command
+substitution (`$(...)` / backticks), background jobs (`&`), function
+bodies. The rules engine evaluates each segment.
+
+Two-pass evaluation:
+
+1. **Request-level rules** (those with only `tool` / `tool_in` /
+   `command_regex` matchers) fire once per request — their verdict
+   applies to the whole call.
+2. **Command-level rules** (program / subcommand / args / env matchers)
+   fire per segment.
+
+**Safety property**: if a compound has any segment with no command-level
+match AND no request-level rule covered the request, a synthetic `ask`
+is emitted for that segment. So `git status && something-unknown`
+combines to `ask` rather than silently `allow` (the git-readonly rule
+can't cover for the unmatched segment).
+
+**Known parser blind spots**: `find ... -exec rm`, `xargs rm`, and
+`bash -c "..."` are syntactically a single CallExpr to `find` / `xargs`
+/ `bash` — the inner command isn't a separate AST node. Catch these
+with `command_regex` rules or Phase-2 modules with tool-specific
+semantic knowledge.
+
 ## Configuration hierarchy
 
 Walk from `cwd` upward, then user level:

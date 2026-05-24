@@ -277,6 +277,111 @@ rules:
 	}
 }
 
+// --- Compound-command safety tests ---
+
+const safetyRules = `
+rules:
+  - name: git-readonly
+    match:
+      program: git
+      subcommand_in: [status, log, diff, show, blame]
+    decide: allow
+    reason: git-readonly
+
+  - name: never-rm-rf-home
+    match:
+      command_regex: 'rm\s+-rf?\s+(~|\$HOME)'
+    decide: deny
+    reason: refused
+`
+
+func TestCompoundDenyOnRhsChain(t *testing.T) {
+	// Critical safety case: an allow on the LHS must not mask a deny on
+	// the RHS of a chain. (This was the bug before the AST-walk fix.)
+	eng, err := Parse([]byte(safetyRules))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	final := api.Combine(eng.Evaluate(bashReq("git status && rm -rf ~/foo")))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("git status && rm -rf ~/foo: combined verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestCompoundAllAllowedChain(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	final := api.Combine(eng.Evaluate(bashReq("git status && git diff")))
+	if final.Verdict != api.VerdictAllow {
+		t.Errorf("git status && git diff: combined verdict = %v, want allow", final.Verdict)
+	}
+}
+
+func TestCompoundUnmatchedSegmentForcesAsk(t *testing.T) {
+	// `git status` matches the allow rule, but `something-unknown` has
+	// no matching rule — the compound must NOT silently allow.
+	eng, _ := Parse([]byte(safetyRules))
+	final := api.Combine(eng.Evaluate(bashReq("git status && something-unknown-here")))
+	if final.Verdict != api.VerdictAsk {
+		t.Errorf("git status && unknown: verdict = %v, want ask (an unmatched compound segment must force a prompt)", final.Verdict)
+	}
+}
+
+func TestCompoundSemicolonChainEvalsBoth(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	final := api.Combine(eng.Evaluate(bashReq("git status; rm -rf ~/important")))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("semicolon-chain: verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestCompoundOrChainEvalsBoth(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	// `||` means RHS only runs if LHS fails, but it CAN run — must be vetted.
+	final := api.Combine(eng.Evaluate(bashReq("git status || rm -rf ~/foo")))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("or-chain: verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestCompoundForLoopBodyVetted(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	final := api.Combine(eng.Evaluate(bashReq("for f in *.go; do rm -rf ~/foo; done")))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("for-loop body: verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestCompoundCommandSubstitutionVetted(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	// rm hidden in $(...) must still be caught.
+	final := api.Combine(eng.Evaluate(bashReq(`echo "$(rm -rf ~/foo)"`)))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("$() body: verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestCompoundSubshellVetted(t *testing.T) {
+	eng, _ := Parse([]byte(safetyRules))
+	final := api.Combine(eng.Evaluate(bashReq("(cd /tmp && rm -rf ~/foo)")))
+	if final.Verdict != api.VerdictDeny {
+		t.Errorf("subshell: verdict = %v, want deny", final.Verdict)
+	}
+}
+
+func TestSimpleUnmatchedStillFallsToAsk(t *testing.T) {
+	// Make sure the new compound safety logic doesn't break the
+	// single-command "no match → ask" behavior.
+	eng, _ := Parse([]byte(safetyRules))
+	decisions := eng.Evaluate(bashReq("some-random-tool --foo"))
+	if len(decisions) != 0 {
+		t.Errorf("simple unmatched: expected no decisions (legacy behavior), got %d: %+v", len(decisions), decisions)
+	}
+	// Combine to make sure the wire verdict is still ask.
+	if final := api.Combine(decisions); final.Verdict != api.VerdictPass {
+		t.Errorf("simple unmatched: combined = %v, want pass (renders as ask)", final.Verdict)
+	}
+}
+
 func TestLoadMissingFileReturnsEmpty(t *testing.T) {
 	eng, err := Load("/nonexistent/path/rules.yaml")
 	if err != nil {

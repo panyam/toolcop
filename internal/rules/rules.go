@@ -1,6 +1,14 @@
 // Package rules loads YAML rule files and evaluates them against incoming
 // requests. This is the Phase-1 declarative matcher; Phase-2 Go modules
 // extend it with stateful logic via the same Decision contract.
+//
+// # Compound-command safety
+//
+// For Bash, every command in the parsed AST (chains, loops, conditionals,
+// subshells, command substitution) is evaluated independently. If any
+// segment of a compound has *no* matching rule, the engine synthesizes an
+// `ask` decision for it — preventing one segment's `allow` from silently
+// covering for another unmatched (and therefore unvetted) segment.
 package rules
 
 import (
@@ -18,18 +26,15 @@ import (
 type Rule struct {
 	Name   string `yaml:"name"`
 	Match  Match  `yaml:"match"`
-	Decide string `yaml:"decide"`           // allow | deny | ask
-	Reason string `yaml:"reason,omitempty"` // free-form, shown to Claude
-	Prompt string `yaml:"prompt,omitempty"` // ask only; reserved for module-variable expansion in Phase 2
-	Final  bool   `yaml:"final,omitempty"`  // hierarchy-override block; honored in Phase 3
+	Decide string `yaml:"decide"`
+	Reason string `yaml:"reason,omitempty"`
+	Prompt string `yaml:"prompt,omitempty"`
+	Final  bool   `yaml:"final,omitempty"`
 
-	cmdRegex *regexp.Regexp // compiled at Parse time
+	cmdRegex *regexp.Regexp
 }
 
 // Match is the AND-combined matcher. Empty fields are ignored.
-//
-// Phase-1 subset: tool / tool_in, program / program_in, subcommand /
-// subcommand_in, args_starts_with, command_regex, env_has, env_equals.
 type Match struct {
 	Tool           string            `yaml:"tool,omitempty"`
 	ToolIn         []string          `yaml:"tool_in,omitempty"`
@@ -39,18 +44,13 @@ type Match struct {
 	SubcommandIn   []string          `yaml:"subcommand_in,omitempty"`
 	ArgsStartsWith []string          `yaml:"args_starts_with,omitempty"`
 	CommandRegex   string            `yaml:"command_regex,omitempty"`
-	EnvHas         StringList        `yaml:"env_has,omitempty"`    // all listed keys must be present in the command's env prefix
-	EnvEquals      map[string]string `yaml:"env_equals,omitempty"` // all listed key=value pairs must match exactly
+	EnvHas         StringList        `yaml:"env_has,omitempty"`
+	EnvEquals      map[string]string `yaml:"env_equals,omitempty"`
 }
 
-// StringList accepts either a single YAML scalar or a sequence:
-//
-//	env_has: GH_TOKEN          # scalar form
-//	env_has: [GH_TOKEN, OTHER] # sequence form
+// StringList accepts either a single YAML scalar or a sequence.
 type StringList []string
 
-// UnmarshalYAML implements yaml.Unmarshaler so the field accepts both
-// scalar and sequence forms.
 func (s *StringList) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode {
 		var single string
@@ -68,19 +68,14 @@ func (s *StringList) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// Config is the on-disk shape: a top-level `rules:` list.
 type Config struct {
 	Rules []Rule `yaml:"rules"`
 }
 
-// Engine holds compiled rules for fast repeated evaluation.
 type Engine struct {
 	Rules []Rule
 }
 
-// Load reads the YAML file at path. A missing file yields an empty Engine
-// (rules.yaml is optional — no rules means every request falls through to
-// the default `ask`).
 func Load(path string) (*Engine, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -92,7 +87,6 @@ func Load(path string) (*Engine, error) {
 	return Parse(data)
 }
 
-// Parse compiles YAML bytes directly. Used by tests and by `toolcop test`.
 func Parse(data []byte) (*Engine, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -118,22 +112,87 @@ func validDecide(s string) bool {
 	return s == "allow" || s == "deny" || s == "ask"
 }
 
-// Evaluate runs every rule against the request and returns the Decisions
-// of the rules that matched. The caller folds them via [api.Combine].
+// Evaluate runs every rule against the request and returns Decisions to
+// be folded by [api.Combine].
+//
+// Two-pass strategy:
+//
+//  1. Request-level rules (those with no per-command matchers — pure
+//     tool / command_regex) fire ONCE per request. Their verdict applies
+//     to the whole call.
+//  2. Command-level rules (those with program / subcommand / args /
+//     env matchers) fire PER segment of a Bash compound. Each segment is
+//     evaluated independently.
+//
+// If a compound has any segment with no command-level match AND no
+// request-level rule covered the request, a synthetic `ask` decision is
+// emitted for that segment — preventing a Bash-specific allow on one
+// segment from silently covering an unvetted segment elsewhere.
 func (e *Engine) Evaluate(req api.Request) []api.Decision {
-	parsed := parseBashIfApplicable(req)
+	set := parseBashIfApplicable(req)
+
 	var decisions []api.Decision
+
+	// Pass 1: request-level-only rules.
+	requestLevelFired := false
 	for i := range e.Rules {
 		r := &e.Rules[i]
-		if !r.matches(&req, parsed) {
+		if r.hasBashMatchers() {
+			continue
+		}
+		if !r.matchesRequestLevel(&req, set) {
 			continue
 		}
 		decisions = append(decisions, r.decision())
+		requestLevelFired = true
+	}
+
+	// Non-Bash or unparseable Bash: no per-segment pass.
+	if set == nil || len(set.Commands) == 0 {
+		return decisions
+	}
+
+	// Pass 2: command-level rules, per segment.
+	compound := set.IsCompound()
+	for idx, cmd := range set.Commands {
+		perCmd := e.decisionsForCommandBashOnly(&req, set, cmd)
+		if compound && len(perCmd) == 0 && !requestLevelFired {
+			// No rule of any kind covered this segment. Don't let
+			// another segment's allow silently rescue it.
+			decisions = append(decisions, api.Decision{
+				Verdict: api.VerdictAsk,
+				Source:  "(unmatched-segment)",
+				Reason:  fmt.Sprintf("compound segment %d (%q) had no matching rule", idx, cmd.Program),
+			})
+			continue
+		}
+		decisions = append(decisions, perCmd...)
 	}
 	return decisions
 }
 
-func parseBashIfApplicable(req api.Request) *parse.Parsed {
+// decisionsForCommandBashOnly returns Decisions for command-level rules
+// (i.e., those with at least one Bash-specific matcher) that match the
+// given single command.
+func (e *Engine) decisionsForCommandBashOnly(req *api.Request, set *parse.CommandSet, cmd *parse.Command) []api.Decision {
+	var decs []api.Decision
+	for i := range e.Rules {
+		r := &e.Rules[i]
+		if !r.hasBashMatchers() {
+			continue
+		}
+		if !r.matchesRequestLevel(req, set) {
+			continue
+		}
+		if !r.matchesCommand(cmd) {
+			continue
+		}
+		decs = append(decs, r.decision())
+	}
+	return decs
+}
+
+func parseBashIfApplicable(req api.Request) *parse.CommandSet {
 	if req.ToolName != "Bash" || len(req.ToolInput) == 0 {
 		return nil
 	}
@@ -141,67 +200,72 @@ func parseBashIfApplicable(req api.Request) *parse.Parsed {
 	if err := json.Unmarshal(req.ToolInput, &input); err != nil {
 		return nil
 	}
-	p, err := parse.ParseBash(input.Command)
+	set, err := parse.ParseBash(input.Command)
 	if err != nil {
 		return nil
 	}
-	return p
+	return set
 }
 
-func (r *Rule) matches(req *api.Request, parsed *parse.Parsed) bool {
+// matchesRequestLevel checks rule fields that apply to the whole request,
+// not to a single command in the compound: tool / tool_in, command_regex.
+func (r *Rule) matchesRequestLevel(req *api.Request, set *parse.CommandSet) bool {
 	m := r.Match
-
 	if m.Tool != "" && m.Tool != req.ToolName {
 		return false
 	}
 	if len(m.ToolIn) > 0 && !containsStr(m.ToolIn, req.ToolName) {
 		return false
 	}
+	if r.cmdRegex != nil {
+		if set == nil {
+			return false
+		}
+		if !r.cmdRegex.MatchString(set.Raw) {
+			return false
+		}
+	}
+	return true
+}
 
-	needsBash := m.Program != "" || len(m.ProgramIn) > 0 ||
+// hasBashMatchers reports whether the rule has any command-level
+// matchers — i.e., it needs a parsed [parse.Command] to evaluate.
+func (r *Rule) hasBashMatchers() bool {
+	m := r.Match
+	return m.Program != "" || len(m.ProgramIn) > 0 ||
 		m.Subcommand != "" || len(m.SubcommandIn) > 0 ||
 		len(m.ArgsStartsWith) > 0 ||
 		len(m.EnvHas) > 0 || len(m.EnvEquals) > 0
-	if needsBash {
-		if parsed == nil {
-			return false
-		}
-		if m.Program != "" && m.Program != parsed.Program {
-			return false
-		}
-		if len(m.ProgramIn) > 0 && !containsStr(m.ProgramIn, parsed.Program) {
-			return false
-		}
-		if m.Subcommand != "" && m.Subcommand != parsed.Subcommand {
-			return false
-		}
-		if len(m.SubcommandIn) > 0 && !containsStr(m.SubcommandIn, parsed.Subcommand) {
-			return false
-		}
-		if len(m.ArgsStartsWith) > 0 && !startsWithStr(parsed.Args, m.ArgsStartsWith) {
-			return false
-		}
-		for _, key := range m.EnvHas {
-			if _, ok := parsed.Env[key]; !ok {
-				return false
-			}
-		}
-		for key, want := range m.EnvEquals {
-			if got, ok := parsed.Env[key]; !ok || got != want {
-				return false
-			}
-		}
-	}
+}
 
-	if r.cmdRegex != nil {
-		if parsed == nil {
-			return false
-		}
-		if !r.cmdRegex.MatchString(parsed.Raw) {
+// matchesCommand checks command-level fields against a single command.
+func (r *Rule) matchesCommand(cmd *parse.Command) bool {
+	m := r.Match
+	if m.Program != "" && m.Program != cmd.Program {
+		return false
+	}
+	if len(m.ProgramIn) > 0 && !containsStr(m.ProgramIn, cmd.Program) {
+		return false
+	}
+	if m.Subcommand != "" && m.Subcommand != cmd.Subcommand {
+		return false
+	}
+	if len(m.SubcommandIn) > 0 && !containsStr(m.SubcommandIn, cmd.Subcommand) {
+		return false
+	}
+	if len(m.ArgsStartsWith) > 0 && !startsWithStr(cmd.Args, m.ArgsStartsWith) {
+		return false
+	}
+	for _, key := range m.EnvHas {
+		if _, ok := cmd.Env[key]; !ok {
 			return false
 		}
 	}
-
+	for key, want := range m.EnvEquals {
+		if got, ok := cmd.Env[key]; !ok || got != want {
+			return false
+		}
+	}
 	return true
 }
 

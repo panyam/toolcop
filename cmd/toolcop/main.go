@@ -171,19 +171,27 @@ func runTestImpl(cmd, rulesPath string) error {
 		return fmt.Errorf("load rules: %w", err)
 	}
 
-	parsed, perr := parse.ParseBash(cmd)
+	parsedSet, perr := parse.ParseBash(cmd)
 	fmt.Printf("Command: %s\n", cmd)
 	if perr != nil {
 		fmt.Printf("Parse error: %v\n", perr)
+	} else if len(parsedSet.Commands) == 0 {
+		fmt.Println("  (no command invocations extracted)")
 	} else {
-		fmt.Printf("  Program:    %s\n", parsed.Program)
-		fmt.Printf("  Subcommand: %s\n", parsed.Subcommand)
-		fmt.Printf("  Args:       %v\n", parsed.Args)
-		if len(parsed.Env) > 0 {
-			fmt.Printf("  Env:        %v\n", parsed.Env)
+		if parsedSet.IsCompound() {
+			fmt.Printf("  Compound: %d segments\n", len(parsedSet.Commands))
 		}
-		if parsed.HasPipeline {
-			fmt.Printf("  Pipeline:   yes\n")
+		for i, c := range parsedSet.Commands {
+			prefix := "  "
+			if parsedSet.IsCompound() {
+				prefix = fmt.Sprintf("  Cmd[%d]", i)
+			}
+			fmt.Printf("%s Program:    %s\n", prefix, c.Program)
+			fmt.Printf("%s Subcommand: %s\n", prefix, c.Subcommand)
+			fmt.Printf("%s Args:       %v\n", prefix, c.Args)
+			if len(c.Env) > 0 {
+				fmt.Printf("%s Env:        %v\n", prefix, c.Env)
+			}
 		}
 	}
 	fmt.Println()
