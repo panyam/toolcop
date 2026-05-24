@@ -75,21 +75,35 @@ func newDaemonCmd() *cobra.Command {
 	var (
 		socket    string
 		rulesPath string
+		shadow    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the toolcop daemon",
 		Long: `Runs the long-lived daemon that evaluates hook requests from clients.
 Listens on a unix socket; loads YAML rules at startup. SIGTERM / SIGINT
-trigger a graceful shutdown.`,
+trigger a graceful shutdown.
+
+--shadow runs in pass-through mode: rules are evaluated and logged, but
+the wire response is always 'ask' so the agent prompts as if toolcop
+weren't there. Use this to pilot a rule set against real sessions and
+inspect daemon.log to see what would have changed. WARNING: deny rules
+are inert in shadow mode — don't rely on them for safety while
+shadowing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			eng, err := rules.Load(rulesPath)
 			if err != nil {
 				return fmt.Errorf("load rules: %w", err)
 			}
-			log.Printf("toolcop daemon %s: loaded %d rules from %s", version, len(eng.Rules), rulesPath)
+			mode := "live"
+			if shadow {
+				mode = "SHADOW (pass-through; denies inert)"
+			}
+			log.Printf("toolcop daemon %s: loaded %d rules from %s [mode=%s]",
+				version, len(eng.Rules), rulesPath, mode)
 
 			d := daemon.New(socket, eng, nil)
+			d.Shadow = shadow
 			if err := d.Listen(); err != nil {
 				return fmt.Errorf("listen: %w", err)
 			}
@@ -109,6 +123,7 @@ trigger a graceful shutdown.`,
 	}
 	cmd.Flags().StringVar(&socket, "socket", daemon.DefaultSocketPath(), "unix socket path")
 	cmd.Flags().StringVar(&rulesPath, "rules", defaultRulesPath(), "YAML rules file")
+	cmd.Flags().BoolVar(&shadow, "shadow", false, "pass-through mode: log would-be decisions but always emit `ask`")
 	return cmd
 }
 

@@ -40,6 +40,16 @@ type Daemon struct {
 	eval       Evaluator
 	log        *log.Logger
 
+	// Shadow, when true, evaluates rules normally but always returns
+	// `ask` to the client. Used to pilot a rule set in real sessions
+	// without behavioral side effects — log the would-be decision,
+	// keep prompting the user as if toolcop weren't there.
+	//
+	// WARNING: in shadow mode, `deny` rules are inert. Anything
+	// previously caught by a deny becomes a prompt. Only use shadow
+	// while validating new rules; flip it off for live enforcement.
+	Shadow bool
+
 	mu      sync.Mutex
 	quit    chan struct{}
 	wg      sync.WaitGroup
@@ -156,10 +166,21 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	final := api.Combine(decisions)
 	elapsed := time.Since(start)
 
-	d.log.Printf("decision=%s tool=%s source=%q reason=%q took=%s",
-		final.Verdict, req.ToolName, final.Source, final.Reason, elapsed)
+	emitted := final
+	if d.Shadow && final.Verdict != api.VerdictAsk && final.Verdict != api.VerdictPass {
+		d.log.Printf("[shadow] would=%s tool=%s source=%q reason=%q (emitting ask)",
+			final.Verdict, req.ToolName, final.Source, final.Reason)
+		emitted = api.Decision{
+			Verdict: api.VerdictAsk,
+			Source:  "(shadow)",
+			Reason:  fmt.Sprintf("shadow mode: would have been %s by %s", final.Verdict, final.Source),
+		}
+	} else {
+		d.log.Printf("decision=%s tool=%s source=%q reason=%q took=%s",
+			emitted.Verdict, req.ToolName, emitted.Source, emitted.Reason, elapsed)
+	}
 
-	if err := api.WriteMessage(conn, final.ToResponse()); err != nil {
+	if err := api.WriteMessage(conn, emitted.ToResponse()); err != nil {
 		d.log.Printf("write: %v", err)
 	}
 }

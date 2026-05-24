@@ -95,6 +95,76 @@ func TestDaemonDoubleListen(t *testing.T) {
 	}
 }
 
+func TestDaemonShadowMasksAllow(t *testing.T) {
+	sock := tempSocket(t)
+	d := New(sock, echoEval{d: api.Allow("test-rule")}, nil)
+	d.Shadow = true
+	if err := d.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go d.Serve()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		d.Shutdown(ctx)
+	}()
+
+	resp := roundtrip(t, sock, sampleRequest("Bash"))
+	if resp.HookSpecificOutput.PermissionDecision != api.PermissionAsk {
+		t.Errorf("shadow should mask allow as ask, got %q",
+			resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestDaemonShadowMasksDeny(t *testing.T) {
+	sock := tempSocket(t)
+	d := New(sock, echoEval{d: api.Deny("dangerous")}, nil)
+	d.Shadow = true
+	if err := d.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go d.Serve()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		d.Shutdown(ctx)
+	}()
+
+	resp := roundtrip(t, sock, sampleRequest("Bash"))
+	if resp.HookSpecificOutput.PermissionDecision != api.PermissionAsk {
+		t.Errorf("shadow should mask deny as ask (inert during pilot), got %q",
+			resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestDaemonShadowPassesThroughAsk(t *testing.T) {
+	// When the verdict already would have been Ask, shadow mode shouldn't
+	// fabricate a "shadow override" since there's nothing to change.
+	sock := tempSocket(t)
+	d := New(sock, echoEval{d: api.Ask("clarify")}, nil)
+	d.Shadow = true
+	if err := d.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go d.Serve()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		d.Shutdown(ctx)
+	}()
+
+	resp := roundtrip(t, sock, sampleRequest("Bash"))
+	if resp.HookSpecificOutput.PermissionDecision != api.PermissionAsk {
+		t.Errorf("ask should pass through unchanged, got %q",
+			resp.HookSpecificOutput.PermissionDecision)
+	}
+	// The reason should be the original Ask reason, not the shadow override.
+	if resp.HookSpecificOutput.PermissionDecisionReason != "clarify" {
+		t.Errorf("ask should preserve original reason, got %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+}
+
 func TestDaemonStaleSocketReplaced(t *testing.T) {
 	sock := tempSocket(t)
 	// Create a dead socket file (not listening).

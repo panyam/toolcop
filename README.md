@@ -25,18 +25,31 @@ make install
 toolcop onboard --dry-run    # preview the change first
 toolcop onboard              # do it
 
-# 3. Verify a few commands offline
-toolcop test "gh api repos/foo/bar"   # → allow
-toolcop test "GH_TOKEN=x gh api foo"  # → allow (env-stripped)
-toolcop test "timeout 30 npm test"    # → ask (no matching rule yet)
-toolcop test "rm -rf ~/foo"           # → deny
+# 3. Pilot in shadow mode for a session or two — rules are evaluated
+#    and logged, but the daemon always emits `ask` so behavior is
+#    indistinguishable from running without toolcop. Inspect the log
+#    to see what would have changed once you flip to live.
+toolcop daemon --shadow      # run foreground, or background it
+tail -f ~/.local/state/toolcop/daemon.log
 
-# 4. Start a fresh Claude session — the daemon auto-starts on the
-#    first tool call. Logs land in ~/.local/state/toolcop/daemon.log.
+# 4. When you're happy with what shadow logged, go live by just
+#    killing the shadow daemon — the next tool call auto-forks a
+#    normal one with the same rules. No config change needed.
+pkill -f 'toolcop daemon --shadow'
 
-# 5. To remove the hook later:
+# 5. Verify a few commands offline whenever you tweak rules
+toolcop test "gh api repos/foo/bar"        # → allow
+toolcop test "GH_TOKEN=x gh api foo"       # → allow (env-stripped)
+toolcop test "git status && rm -rf ~/foo"  # → deny (compound vetted)
+toolcop test "timeout 30 npm test"         # → ask (no matching rule yet)
+
+# 6. To remove the hook later
 toolcop offboard
 ```
+
+**Shadow mode caveat**: in `--shadow`, deny rules are inert (everything
+becomes `ask`). Use it only while validating new rules — switch back to
+live mode before you actually rely on safety rules like `never-rm-rf-home`.
 
 For richer rules than the starter set, see [`examples/rules.yaml`](./examples/rules.yaml). Run `toolcop --help` for the full subcommand list.
 
